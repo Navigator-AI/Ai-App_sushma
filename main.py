@@ -62,7 +62,7 @@ def main():
     logging.info("Initializing services")
     settings_service = SettingsService()
     export_service = ExportService()
-    chat_service = ChatService()
+    chat_service = ChatService(settings_service)
     
     # Get API key from settings
     api_key = settings_service.get_api_key()
@@ -70,6 +70,10 @@ def main():
     # Create sequence generator with API key
     sequence_generator = SequenceGenerator()
     sequence_generator.set_api_key(api_key)
+    
+    # Set spring specifications from settings
+    spring_specification = settings_service.get_spring_specification()
+    sequence_generator.set_spring_specification(spring_specification)
     
     # Create and show main window
     logging.info("Creating main window")

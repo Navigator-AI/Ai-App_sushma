@@ -7,6 +7,7 @@ from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QTextEdi
                            QSizePolicy)
 from PyQt5.QtCore import Qt, pyqtSignal, pyqtSlot, QTimer, QSize
 from PyQt5.QtGui import QFont, QTextCursor, QIcon, QMovie
+import pandas as pd
 
 from utils.text_parser import extract_parameters
 from models.data_models import TestSequence, ChatMessage
@@ -31,6 +32,9 @@ class ChatPanel(QWidget):
         # Store services
         self.chat_service = chat_service
         self.sequence_generator = sequence_generator
+        
+        # Get the settings service from chat service
+        self.settings_service = self.chat_service.settings_service
         
         # State variables
         self.is_generating = False
@@ -113,7 +117,7 @@ class ChatPanel(QWidget):
         layout.addWidget(input_label, 0)  # No stretch factor
         
         self.user_input = QTextEdit()
-        self.user_input.setPlaceholderText("Example: Generate a test sequence for a compression spring with free length 50mm, wire diameter 2mm, and spring rate 5 N/mm.")
+        self.user_input.setPlaceholderText("Ask a question, chat, or request a test sequence (e.g., 'Generate a test sequence for a compression spring with free length 50mm')")
         self.user_input.setMinimumHeight(100)
         self.user_input.setMaximumHeight(150)
         layout.addWidget(self.user_input, 0)  # No stretch factor
@@ -122,8 +126,8 @@ class ChatPanel(QWidget):
         button_layout = QHBoxLayout()
         button_layout.setSpacing(10)
         
-        self.generate_btn = QPushButton("Generate Sequence")
-        self.generate_btn.clicked.connect(self.on_generate_clicked)
+        self.generate_btn = QPushButton("Send Message")
+        self.generate_btn.clicked.connect(self.on_send_clicked)
         self.generate_btn.setMinimumHeight(30)
         button_layout.addWidget(self.generate_btn)
         
@@ -166,8 +170,8 @@ class ChatPanel(QWidget):
         cursor.movePosition(QTextCursor.End)
         self.chat_display.setTextCursor(cursor)
     
-    def on_generate_clicked(self):
-        """Handle generate button clicks."""
+    def on_send_clicked(self):
+        """Handle send button clicks (for both chat and generation)."""
         # Get user input
         user_input = self.user_input.toPlainText()
         
@@ -178,7 +182,7 @@ class ChatPanel(QWidget):
         
         # Check if generation is already in progress
         if self.is_generating:
-            QMessageBox.warning(self, "Generation in Progress", "Please wait for the current generation to complete.")
+            QMessageBox.warning(self, "Processing", "Please wait for the current request to complete.")
             return
         
         # Add user message to chat history
@@ -189,6 +193,25 @@ class ChatPanel(QWidget):
         
         # Extract parameters from user input
         parameters = extract_parameters(user_input)
+        
+        # Add the original prompt to parameters
+        parameters['prompt'] = user_input
+        
+        # Check if the input contains spring specifications and parse them
+        contains_specs = self.parse_spring_specs(user_input)
+        
+        # If specs were parsed, update the sequence generator
+        if contains_specs:
+            # Get the updated specification and set it in the sequence generator
+            updated_spec = self.settings_service.get_spring_specification()
+            self.sequence_generator.set_spring_specification(updated_spec)
+            
+            # Add a note to the chat about using the parsed specifications
+            self.chat_service.add_message(
+                "assistant",
+                "I've detected spring specifications in your request and will use them for generation."
+            )
+            self.refresh_chat_display()
         
         # Start generation
         self.start_generation(parameters)
@@ -230,6 +253,21 @@ class ChatPanel(QWidget):
         self.progress_bar.setValue(0)
         self.status_label.setText("Starting generation...")
         
+        # Check if spring specifications should be included in the prompt
+        spring_spec = self.sequence_generator.get_spring_specification()
+        if spring_spec and spring_spec.enabled:
+            # Add specification text to the prompt if not already included
+            if 'prompt' in parameters:
+                spec_text = spring_spec.to_prompt_text()
+                if spec_text not in parameters['prompt']:
+                    parameters['prompt'] = f"{spec_text}\n\n{parameters['prompt']}"
+                    # Add a system note to the chat about using specifications
+                    self.chat_service.add_message(
+                        "assistant",
+                        "I'll use the current spring specifications for this request."
+                    )
+                    self.refresh_chat_display()
+        
         # Start async generation
         self.sequence_generator.generate_sequence_async(parameters)
     
@@ -269,8 +307,18 @@ class ChatPanel(QWidget):
         # Reset generating state
         self.set_generating_state(False)
         
+        # Check if this is a conversation message (indicated by a special "CHAT" row)
+        if isinstance(sequence, pd.DataFrame) and not sequence.empty and "CHAT" in sequence["Row"].values:
+            # Extract the chat message from the Description column
+            chat_message = sequence.loc[sequence["Row"] == "CHAT", "Description"].values[0]
+            
+            # Add the response to the chat history
+            self.chat_service.add_message("assistant", chat_message)
+            self.refresh_chat_display()
+            return
+        
         # Check for errors
-        if not sequence:
+        if sequence is None or (isinstance(sequence, pd.DataFrame) and sequence.empty):
             # Add error message to chat history
             self.chat_service.add_message("assistant", f"I couldn't generate a valid test sequence: {error_msg}")
             self.refresh_chat_display()
@@ -306,7 +354,7 @@ class ChatPanel(QWidget):
         self.status_label.setText(status)
     
     def validate_api_key(self):
-        """Validate the API key."""
+        """Check if API key is provided, but don't validate it to save credits."""
         # Get the API key from the sequence generator
         api_key = self.sequence_generator.api_client.api_key
         
@@ -318,35 +366,155 @@ class ChatPanel(QWidget):
                 "Please enter an API key in the sidebar to use the chat."
             )
             self.refresh_chat_display()
-            return
+            return False
         
-        # Set generating state
-        self.set_generating_state(True)
-        self.status_label.setText("Validating API key...")
-        
-        # Use a timer to validate in the background
-        QTimer.singleShot(100, self._validate_api_key_async)
+        # Simply acknowledge the key is present, don't validate to save credits
+        self.chat_service.add_message(
+            "assistant", 
+            "API key is set. You can start chatting or generating sequences."
+        )
+        self.refresh_chat_display()
+        return True
     
-    def _validate_api_key_async(self):
-        """Perform API key validation in the background."""
-        try:
-            # Validate the API key
-            valid, message = self.sequence_generator.api_client.validate_api_key()
+    def parse_spring_specs(self, text):
+        """Parse spring specifications from the user input if present.
+        
+        Args:
+            text: User input text
+        
+        Returns:
+            True if specifications were found and parsed, False otherwise
+        """
+        # Check if the text contains spring specification format
+        if not any(pattern in text.lower() for pattern in [
+            "part name:", "free length:", "wire dia:", "od:", "set point", "safety limit:"
+        ]):
+            return False
+        
+        # Import regex for pattern matching
+        import re
+        
+        # Create parsed data dictionary
+        parsed_data = {
+            "basic_info": {},
+            "set_points": []
+        }
+        
+        # Define patterns for basic info
+        patterns = {
+            "part_name": r"Part Name:\s*(.+?)(?:\n|$)",
+            "part_number": r"Part Number:\s*(.+?)(?:\n|$)",
+            "part_id": r"ID:\s*(\d+)(?:\n|$)",
+            "free_length": r"Free Length:\s*([\d.]+)(?:\s*mm)?(?:\n|$)",
+            "coil_count": r"No of Coils:\s*([\d.]+)(?:\n|$)",
+            "wire_dia": r"(?:Wire|Wired) Dia(?:meter)?:\s*([\d.]+)(?:\s*mm)?(?:\n|$)",
+            "outer_dia": r"OD:\s*([\d.]+)(?:\s*mm)?(?:\n|$)",
+            "safety_limit": r"[Ss]afety limit:\s*([\d.]+)(?:\s*N)?(?:\n|$)"
+        }
+        
+        # Extract basic info
+        for key, pattern in patterns.items():
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                value = match.group(1).strip()
+                try:
+                    if key in ["part_id"]:
+                        parsed_data["basic_info"][key] = int(value)
+                    elif key in ["free_length", "coil_count", "wire_dia", "outer_dia", "safety_limit"]:
+                        parsed_data["basic_info"][key] = float(value)
+                    else:
+                        parsed_data["basic_info"][key] = value
+                except (ValueError, TypeError):
+                    # Skip if conversion fails
+                    continue
+        
+        # Extract set points
+        set_point_indices = []
+        
+        # Find all set point indices mentioned in the text
+        for match in re.finditer(r"Set Po(?:i|n)(?:i|t)-(\d+)", text, re.IGNORECASE):
+            try:
+                index = int(match.group(1))
+                if index not in set_point_indices:
+                    set_point_indices.append(index)
+            except ValueError:
+                continue
+        
+        # Process each set point
+        for index in set_point_indices:
+            set_point = {"index": index - 1}  # Convert to 0-based index
             
-            if not valid:
-                # Add error message to chat history
-                self.chat_service.add_message(
-                    "assistant", 
-                    f"API key validation failed: {message}"
+            # Position pattern
+            position_pattern = r"Set Po(?:i|n)(?:i|t)-" + str(index) + r"(?:\s+in mm)?:\s*([\d.]+)(?:\s*mm)?(?:\n|$)"
+            position_match = re.search(position_pattern, text, re.IGNORECASE)
+            
+            # Load pattern (with tolerance)
+            load_pattern = r"Set Po(?:i|n)(?:i|t)-" + str(index) + r" Load In N:\s*([\d.]+)(?:±([\d.]+)%)?(?:\s*N)?(?:\n|$)"
+            load_match = re.search(load_pattern, text, re.IGNORECASE)
+            
+            # Extract values
+            if position_match:
+                try:
+                    set_point["position"] = float(position_match.group(1).strip())
+                except (ValueError, TypeError):
+                    continue
+            
+            if load_match:
+                try:
+                    set_point["load"] = float(load_match.group(1).strip())
+                    
+                    # Extract tolerance if present
+                    if load_match.group(2):
+                        set_point["tolerance"] = float(load_match.group(2).strip())
+                except (ValueError, TypeError):
+                    continue
+            
+            # Add set point if it has both position and load
+            if "position" in set_point and "load" in set_point:
+                set_point["enabled"] = True
+                if "tolerance" not in set_point:
+                    set_point["tolerance"] = 10.0  # Default tolerance
+                parsed_data["set_points"].append(set_point)
+        
+        # Update specifications if we found any
+        if not parsed_data["basic_info"] and not parsed_data["set_points"]:
+            return False
+        
+        # Use the settings service
+        settings_service = self.settings_service
+        
+        # Update basic info if any was found
+        if parsed_data["basic_info"]:
+            # Get values from basic info or use current values
+            spec = settings_service.get_spring_specification()
+            
+            part_name = parsed_data["basic_info"].get("part_name", spec.part_name)
+            part_number = parsed_data["basic_info"].get("part_number", spec.part_number)
+            part_id = parsed_data["basic_info"].get("part_id", spec.part_id)
+            free_length = parsed_data["basic_info"].get("free_length", spec.free_length_mm)
+            coil_count = parsed_data["basic_info"].get("coil_count", spec.coil_count)
+            wire_dia = parsed_data["basic_info"].get("wire_dia", spec.wire_dia_mm)
+            outer_dia = parsed_data["basic_info"].get("outer_dia", spec.outer_dia_mm)
+            safety_limit = parsed_data["basic_info"].get("safety_limit", spec.safety_limit_n)
+            
+            # Update basic info
+            settings_service.update_spring_basic_info(
+                part_name, part_number, part_id, free_length, coil_count,
+                wire_dia, outer_dia, safety_limit, "mm", True
+            )
+        
+        # Update set points if any were found
+        for sp in parsed_data["set_points"]:
+            if sp["index"] < len(settings_service.get_spring_specification().set_points):
+                # Update existing set point
+                settings_service.update_set_point(
+                    sp["index"], sp["position"], sp["load"], sp["tolerance"], sp["enabled"]
                 )
-                self.refresh_chat_display()
             else:
-                # Add success message to chat history
-                self.chat_service.add_message(
-                    "assistant", 
-                    "API key is valid. You can now generate sequences."
+                # Add new set point first
+                settings_service.add_set_point()
+                settings_service.update_set_point(
+                    sp["index"], sp["position"], sp["load"], sp["tolerance"], sp["enabled"]
                 )
-                self.refresh_chat_display()
-        finally:
-            # Reset generating state
-            self.set_generating_state(False) 
+        
+        return len(parsed_data["basic_info"]) > 0 or len(parsed_data["set_points"]) > 0 

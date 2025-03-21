@@ -5,7 +5,7 @@ Contains the main window class and initialization.
 import sys
 import os
 from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
-                            QSplitter, QMessageBox, QApplication)
+                            QSplitter, QMessageBox, QApplication, QTabWidget)
 from PyQt5.QtCore import Qt, pyqtSlot
 from PyQt5.QtGui import QFont, QIcon
 
@@ -16,6 +16,7 @@ from models.data_models import TestSequence
 from ui.sidebar import SidebarWidget
 from ui.chat_panel import ChatPanel
 from ui.results_panel import ResultsPanel
+from ui.specifications_panel import SpecificationsPanel
 
 
 class MainWindow(QMainWindow):
@@ -67,17 +68,29 @@ class MainWindow(QMainWindow):
         
         # Create main content area
         main_content = QWidget()
-        content_layout = QHBoxLayout()
+        content_layout = QVBoxLayout()
         
-        # Create chat panel
+        # Create tab widget for main content
+        self.tab_widget = QTabWidget()
+        
+        # Create content panels
         self.chat_panel = ChatPanel(self.chat_service, self.sequence_generator)
-        
-        # Create results panel
         self.results_panel = ResultsPanel(self.export_service)
+        self.specs_panel = SpecificationsPanel(self.settings_service, self.sequence_generator)
         
-        # Add panels to content layout
-        content_layout.addWidget(self.chat_panel, 1)
-        content_layout.addWidget(self.results_panel, 1)
+        # Create chat+results container
+        chat_results_container = QWidget()
+        chat_results_layout = QHBoxLayout()
+        chat_results_layout.addWidget(self.chat_panel, 1)
+        chat_results_layout.addWidget(self.results_panel, 1)
+        chat_results_container.setLayout(chat_results_layout)
+        
+        # Add tabs
+        self.tab_widget.addTab(chat_results_container, "Chat & Results")
+        self.tab_widget.addTab(self.specs_panel, "Specifications")
+        
+        # Add tab widget to content layout
+        content_layout.addWidget(self.tab_widget)
         
         main_content.setLayout(content_layout)
         
@@ -107,8 +120,8 @@ class MainWindow(QMainWindow):
         # Connect chat panel signals
         self.chat_panel.sequence_generated.connect(self.on_sequence_generated)
         
-        # Connect results panel signals
-        # None for now
+        # Connect specifications panel signals
+        self.specs_panel.specifications_changed.connect(self.on_specifications_changed)
     
     def on_api_key_changed(self, api_key):
         """Handle API key changes.
@@ -119,8 +132,10 @@ class MainWindow(QMainWindow):
         # Update the API key in the sequence generator
         self.sequence_generator.set_api_key(api_key)
         
-        # Validate the API key
-        self.chat_panel.validate_api_key()
+        # Only validate the API key if it's not empty
+        if api_key.strip():
+            # Validate the API key
+            self.chat_panel.validate_api_key()
     
     def on_clear_chat(self):
         """Handle clear chat button clicks."""
@@ -138,6 +153,16 @@ class MainWindow(QMainWindow):
         """
         # Show the sequence in the results panel
         self.results_panel.display_sequence(sequence)
+    
+    def on_specifications_changed(self, specifications):
+        """Handle specifications changes.
+        
+        Args:
+            specifications: New specifications.
+        """
+        # The sequence generator is already updated by the specifications panel,
+        # so we don't need to do anything here.
+        pass
     
     def apply_theme(self):
         """Apply the theme."""

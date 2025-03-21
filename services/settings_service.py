@@ -9,13 +9,15 @@ import logging
 from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+from models.data_models import SpringSpecification, SetPoint
 
 # Default settings
 DEFAULT_SETTINGS = {
     "api_key": "",
     "default_export_format": "CSV",
     "recent_sequences": [],
-    "max_chat_history": 100
+    "max_chat_history": 100,
+    "spring_specification": None
 }
 
 # App salt for encryption (do not change)
@@ -33,6 +35,10 @@ class SettingsService:
         self.settings_file = os.path.join(self.settings_dir, "settings.dat")
         self.encryption_key = self._generate_key()
         self.load_settings()
+        
+        # Initialize spring specification if it doesn't exist
+        if "spring_specification" not in self.settings or self.settings["spring_specification"] is None:
+            self.settings["spring_specification"] = SpringSpecification().to_dict()
     
     def _ensure_data_dir(self):
         """Ensure the data directory exists.
@@ -164,4 +170,100 @@ class SettingsService:
         Returns:
             List of recent sequence IDs.
         """
-        return self.settings.get("recent_sequences", []) 
+        return self.settings.get("recent_sequences", [])
+    
+    def get_spring_specification(self):
+        """Get the spring specification.
+        
+        Returns:
+            The SpringSpecification object.
+        """
+        spec_dict = self.settings.get("spring_specification")
+        if spec_dict:
+            return SpringSpecification.from_dict(spec_dict)
+        else:
+            # Return default specification
+            return SpringSpecification()
+    
+    def set_spring_specification(self, specification):
+        """Set the spring specification.
+        
+        Args:
+            specification: The SpringSpecification object.
+        """
+        self.settings["spring_specification"] = specification.to_dict()
+        self.save_settings()
+    
+    def update_spring_basic_info(self, part_name, part_number, part_id, 
+                                free_length, coil_count, wire_dia, outer_dia,
+                                safety_limit, unit, enabled):
+        """Update basic spring specification information.
+        
+        Args:
+            part_name: Part name
+            part_number: Part number
+            part_id: Part ID
+            free_length: Free length in mm
+            coil_count: Number of coils
+            wire_dia: Wire diameter in mm
+            outer_dia: Outer diameter in mm
+            safety_limit: Safety limit in N
+            unit: Unit (mm or inch)
+            enabled: Whether the specification is enabled
+        """
+        spec = self.get_spring_specification()
+        
+        spec.part_name = part_name
+        spec.part_number = part_number
+        spec.part_id = part_id
+        spec.free_length_mm = float(free_length)
+        spec.coil_count = float(coil_count)
+        spec.wire_dia_mm = float(wire_dia)
+        spec.outer_dia_mm = float(outer_dia)
+        spec.safety_limit_n = float(safety_limit)
+        spec.unit = unit
+        spec.enabled = enabled
+        
+        self.set_spring_specification(spec)
+    
+    def update_set_point(self, index, position, load, tolerance, enabled):
+        """Update a set point in the spring specification.
+        
+        Args:
+            index: Set point index (0-based)
+            position: Position in mm
+            load: Load in N
+            tolerance: Tolerance in percent
+            enabled: Whether the set point is enabled
+        """
+        spec = self.get_spring_specification()
+        
+        # Ensure we have enough set points
+        while len(spec.set_points) <= index:
+            spec.set_points.append(SetPoint(0.0, 0.0))
+        
+        # Update the set point
+        spec.set_points[index].position_mm = float(position)
+        spec.set_points[index].load_n = float(load)
+        spec.set_points[index].tolerance_percent = float(tolerance)
+        spec.set_points[index].enabled = enabled
+        
+        self.set_spring_specification(spec)
+    
+    def delete_set_point(self, index):
+        """Delete a set point from the spring specification.
+        
+        Args:
+            index: Set point index (0-based)
+        """
+        spec = self.get_spring_specification()
+        
+        if 0 <= index < len(spec.set_points):
+            spec.set_points.pop(index)
+            self.set_spring_specification(spec)
+    
+    def add_set_point(self):
+        """Add a new set point to the spring specification."""
+        spec = self.get_spring_specification()
+        spec.set_points.append(SetPoint(0.0, 0.0))
+        self.set_spring_specification(spec) 

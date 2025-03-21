@@ -53,8 +53,29 @@ class APIClientWorker(QObject):
         if self.api_client.chat_memory:
             context = "\n\nPrevious context:\n" + "\n".join(self.api_client.chat_memory[-3:])
         
+        # Check if test_type is provided in parameters
+        test_type_text = ""
+        if "Test Type" in self.parameters:
+            test_type_text = f"If I want a test sequence, please make it a {self.parameters['Test Type']} test."
+        
+        # Get the original user prompt
+        original_prompt = self.parameters.get('prompt', '')
+        
+        # Check if the user is actually asking for a sequence generation
+        generation_indicators = [
+            'generate', 'create', 'make', 'new sequence', 'test sequence',
+            'spring test', 'compression test', 'tension test',
+            'free length', 'wire diameter', 'outer diameter', 'spring rate'
+        ]
+        
+        is_generation_request = any(indicator in original_prompt.lower() for indicator in generation_indicators)
+        self.is_generation_request = is_generation_request  # Store for later use
+        
         # Create user prompt with parameters
-        user_prompt = USER_PROMPT_TEMPLATE.format(parameter_text=parameter_text) + context
+        user_prompt = USER_PROMPT_TEMPLATE.format(
+            parameter_text=parameter_text if is_generation_request else "",
+            test_type_text=test_type_text if is_generation_request else "My message: " + original_prompt
+        ) + context
         
         # Create payload
         payload = {
@@ -131,38 +152,53 @@ class APIClientWorker(QObject):
         # If we have a response, try to parse it
         df = pd.DataFrame()
         if response_text:
-            # Extract the sequence data
-            data = extract_command_sequence(response_text)
-            
-            if data:
-                self.status.emit("Creating result table...")
-                self.progress.emit(90)
+            # Only try to extract sequence data if this was a sequence generation request
+            if self.is_generation_request:
+                # Extract the sequence data
+                data = extract_command_sequence(response_text)
                 
-                # Convert to DataFrame
-                df = pd.DataFrame(data)
-                
-                # Ensure all required columns are present
-                required_columns = ["Row", "CMD", "Description", "Condition", "Unit", "Tolerance", "Speed rpm"]
-                
-                # Rename any mismatched columns
-                if "Speed" in df.columns and "Speed rpm" not in df.columns:
-                    df = df.rename(columns={"Speed": "Speed rpm"})
+                if data:
+                    self.status.emit("Creating result table...")
+                    self.progress.emit(90)
                     
-                # Add any missing columns
-                for col in required_columns:
-                    if col not in df.columns:
-                        df[col] = ""
-                
-                # Reorder columns to match required format
-                df = df[required_columns]
+                    # Convert to DataFrame
+                    df = pd.DataFrame(data)
+                    
+                    # Ensure all required columns are present
+                    required_columns = ["Row", "CMD", "Description", "Condition", "Unit", "Tolerance", "Speed rpm"]
+                    
+                    # Fix column names - handle both "Cmd" and "CMD" variations
+                    if "Cmd" in df.columns and "CMD" not in df.columns:
+                        df = df.rename(columns={"Cmd": "CMD"})
+                    
+                    # Rename any mismatched columns
+                    if "Speed" in df.columns and "Speed rpm" not in df.columns:
+                        df = df.rename(columns={"Speed": "Speed rpm"})
+                        
+                    # Add any missing columns
+                    for col in required_columns:
+                        if col not in df.columns:
+                            df[col] = ""
+                    
+                    # Reorder columns to match required format
+                    df = df[required_columns]
         
         self.progress.emit(100)
         
-        # If we failed to generate a sequence, return an empty DataFrame
-        if df.empty:
-            error_message = error_message or extract_error_message(response_text) or "Failed to generate sequence"
-            
-        self.finished.emit(df, error_message)
+        # Handle the result differently based on whether this was a sequence request
+        if self.is_generation_request:
+            # If we failed to generate a sequence for a sequence request, return an error
+            if df.empty:
+                error_message = error_message or extract_error_message(response_text) or "Failed to generate sequence"
+                self.finished.emit(df, error_message)
+            else:
+                # Successfully generated a sequence
+                self.finished.emit(df, "")
+        else:
+            # For conversational messages, return the response as is
+            # Create a custom message-only DataFrame
+            message_df = pd.DataFrame([{"Row": "CHAT", "CMD": "CHAT", "Description": response_text}])
+            self.finished.emit(message_df, "")
 
 
 class APIClient:

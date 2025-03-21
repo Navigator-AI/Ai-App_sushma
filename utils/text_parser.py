@@ -5,7 +5,7 @@ Contains functions for extracting spring parameters from natural language text.
 import re
 from typing import Dict, Any
 from datetime import datetime
-from utils.constants import PARAMETER_PATTERNS
+from utils.constants import PARAMETER_PATTERNS, COMMANDS
 
 
 def extract_parameters(text: str) -> Dict[str, Any]:
@@ -20,14 +20,15 @@ def extract_parameters(text: str) -> Dict[str, Any]:
     """
     parameters = {}
     
-    # Extract test type
-    if re.search(r'\b(?:compress|compression)\b', text, re.IGNORECASE):
+    # Extract test type with more flexible pattern matching
+    compression_pattern = r'\b(?:compress|compression|comp|compressive|pushing|push|pressing|press)\b'
+    tension_pattern = r'\b(?:tens|tension|extension|extend|tensile|extending|pulling|pull|stretching|stretch)\b'
+    
+    if re.search(compression_pattern, text, re.IGNORECASE):
         parameters["Test Type"] = "Compression"
-    elif re.search(r'\b(?:tens|tension|extension|extend)\b', text, re.IGNORECASE):
+    elif re.search(tension_pattern, text, re.IGNORECASE):
         parameters["Test Type"] = "Tension"
-    else:
-        # Default to compression if not specified
-        parameters["Test Type"] = "Compression"
+    # Note: We no longer set a default test type to allow the AI to decide
     
     # Extract parameters based on patterns
     for param, pattern in PARAMETER_PATTERNS.items():
@@ -74,6 +75,20 @@ def extract_command_sequence(text: str) -> Dict[str, Any]:
     # Try to parse the JSON
     try:
         data = json.loads(json_content)
+        
+        # Post-process to ensure command codes are present
+        for row in data:
+            # Handle case where Cmd/CMD is empty but Description exists
+            if ('Cmd' in row and not row['Cmd']) or ('CMD' in row and not row['CMD']):
+                cmd_key = 'Cmd' if 'Cmd' in row else 'CMD'
+                # Try to find the command code from the description
+                description = row.get('Description', '')
+                for cmd_code, cmd_desc in COMMANDS.items():
+                    # Check if command description matches or is contained in the row description
+                    if cmd_desc == description or cmd_desc in description:
+                        row[cmd_key] = cmd_code
+                        break
+        
         return data
     except json.JSONDecodeError:
         # If JSON parsing fails, try to extract just the array part
@@ -82,6 +97,15 @@ def extract_command_sequence(text: str) -> Dict[str, Any]:
             cleaned_json = '[' + array_match.group(1) + ']'
             try:
                 data = json.loads(cleaned_json)
+                # Apply the same post-processing
+                for row in data:
+                    if ('Cmd' in row and not row['Cmd']) or ('CMD' in row and not row['CMD']):
+                        cmd_key = 'Cmd' if 'Cmd' in row else 'CMD'
+                        description = row.get('Description', '')
+                        for cmd_code, cmd_desc in COMMANDS.items():
+                            if cmd_desc == description or cmd_desc in description:
+                                row[cmd_key] = cmd_code
+                                break
                 return data
             except json.JSONDecodeError:
                 pass

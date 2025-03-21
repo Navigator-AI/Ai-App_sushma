@@ -20,14 +20,16 @@ APP_PASSWORD = b'SpringTestApp_Secure_Password_2025'
 class ChatService:
     """Service for managing chat history."""
     
-    def __init__(self, max_history: int = 100):
+    def __init__(self, settings_service=None, max_history: int = 100):
         """Initialize the chat service.
         
         Args:
+            settings_service: Settings service instance.
             max_history: Maximum number of messages to keep in history.
         """
         self.history = []
         self.max_history = max_history
+        self.settings_service = settings_service
         self.data_dir = self._ensure_data_dir()
         self.history_file = os.path.join(self.data_dir, "chat_history.dat")
         self.encryption_key = self._generate_key()

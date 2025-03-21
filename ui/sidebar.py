@@ -96,9 +96,9 @@ class SidebarWidget(QWidget):
     
     def load_settings(self):
         """Load settings from the settings service."""
-        # Load API key
-        api_key = self.settings_service.get_api_key()
-        self.api_key_input.setText(api_key)
+        # Don't load API key by default to avoid consuming credits
+        # Let user enter it manually when needed
+        self.api_key_input.setText("")
     
     def on_api_key_changed(self, api_key):
         """Handle API key changes.
