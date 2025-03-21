@@ -107,3 +107,6 @@ venv.bak/
 /templates/
 settings.json
 chat_history.json 
+.venv/
+venv/
+__pycache__/
